@@ -39,9 +39,40 @@ def process_single_image(image_bytes: bytes, filename: str) -> dict:
         {"machine_id": 數字, "raw_a": 數字, "raw_c": 數字}
         """
 
-        # 直接指定最穩定的正式商用模型
-        model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content([prompt, {"mime_type": "image/jpeg", "data": final_bytes}])
+        # 動態取得當下金鑰真正有權限的模型清單
+        try:
+            available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+            # 篩選 flash 模型，並強制排除目前鎖定中的 2.5 版本
+            safe_models = [m for m in available_models if 'flash' in m.lower() and '2.5' not in m]
+        except:
+            safe_models = []
+
+        # 建立無敵嘗試清單 (動態清單 + 官方所有已知穩定別名)
+        fallback_chain = safe_models + [
+            'models/gemini-1.5-flash-latest', 
+            'models/gemini-1.5-flash-001', 
+            'models/gemini-1.5-flash-002', 
+            'gemini-1.5-flash'
+        ]
+        
+        # 去除重複項並保持順序
+        unique_chain = list(dict.fromkeys(fallback_chain))
+
+        response = None
+        last_error = ""
+
+        # 自動輪詢機制：在幾毫秒內盲測所有名字，直到成功為止
+        for model_name in unique_chain:
+            try:
+                model = genai.GenerativeModel(model_name)
+                response = model.generate_content([prompt, {"mime_type": "image/jpeg", "data": final_bytes}])
+                break  # 一旦命中成功，立刻跳出迴圈！
+            except Exception as e:
+                last_error = str(e)
+                continue  # 失敗就靜默切換下一個名字繼續撞門
+
+        if not response:
+            return {"status": "error", "filename": filename, "message": f"伺服器名稱匹配徹底失敗，最後錯誤: {last_error}"}
         
         match = re.search(r'\{.*\}', response.text.strip(), re.DOTALL)
         if match:
@@ -88,7 +119,7 @@ async def index_page():
     <body>
 
     <div class="card">
-        <h2>⚡ AC表極速辨識系統</h2>
+        <h2>⚡ AC表辨識系統</h2>
         
         <div class="file-drop-area" onclick="document.getElementById('file-input').click()">
             <span class="upload-icon">📂</span>
@@ -96,11 +127,11 @@ async def index_page():
             <input type="file" id="file-input" multiple accept="image/*" onchange="updateFileLabel()">
         </div>
 
-        <button id="upload-btn" class="btn" onclick="startBatchAnalyze()" disabled>開始極速分析並排序</button>
+        <button id="upload-btn" class="btn" onclick="startBatchAnalyze()" disabled>開始分析並排序</button>
         
         <div id="progress-box" class="progress-box">
             <div class="spinner"></div>
-            <div id="progress-text" style="color: #666; font-weight: bold;">付費通道全速分析中，請稍候...</div>
+            <div id="progress-text" style="color: #666; font-weight: bold;">分析中，請稍候...</div>
         </div>
 
         <div id="error-box" class="error-msg"></div>
