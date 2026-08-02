@@ -45,19 +45,12 @@ def process_single_image(image_bytes: bytes, filename: str) -> dict:
         {"machine_id": 數字, "raw_a": 數字, "raw_c": 數字}
         """
 
-        # 優先使用相容性最高的模型名稱，若失敗自動退回備用模型
-        try:
-            model = genai.GenerativeModel('gemini-1.5-flash-latest')
-            response = model.generate_content([
-                prompt,
-                {"mime_type": "image/jpeg", "data": final_bytes}
-            ])
-        except Exception:
-            model = genai.GenerativeModel('gemini-1.5-flash')
-            response = model.generate_content([
-                prompt,
-                {"mime_type": "image/jpeg", "data": final_bytes}
-            ])
+        # 使用帶有版本號的精確全名，確保 Google 伺服器絕對認得
+        model = genai.GenerativeModel('gemini-1.5-flash-001')
+        response = model.generate_content([
+            prompt,
+            {"mime_type": "image/jpeg", "data": final_bytes}
+        ])
 
         text = response.text.strip()
         
