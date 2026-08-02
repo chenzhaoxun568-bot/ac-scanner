@@ -22,81 +22,62 @@ def get_active_model_name():
     global ACTIVE_MODEL_NAME
     if ACTIVE_MODEL_NAME:
         return ACTIVE_MODEL_NAME
-        
     try:
-        available_models = []
-        for m in genai.list_models():
-            if 'generateContent' in m.supported_generation_methods:
-                available_models.append(m.name)
-        
+        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
         for name in available_models:
             if 'flash' in name.lower():
                 ACTIVE_MODEL_NAME = name
                 return name
-                
         if available_models:
             ACTIVE_MODEL_NAME = available_models[0]
             return ACTIVE_MODEL_NAME
-    except Exception:
+    except:
         pass
-    return 'gemini-1.5-flash' 
+    return 'gemini-1.5-flash'
 
 def process_single_image(image_bytes: bytes, filename: str) -> dict:
     best_model_name = "偵測中..."
     try:
         if not GEMINI_API_KEY:
-            return {"status": "error", "filename": filename, "message": "環境變數中缺少 GEMINI_API_KEY，請至 Render 設定。"}
+            return {"status": "error", "filename": filename, "message": "環境變數缺少 GEMINI_API_KEY"}
 
+        # 強制壓縮圖片：大幅減少傳輸時間與伺服器記憶體消耗
         image = Image.open(io.BytesIO(image_bytes))
-        w, h = image.size
-        max_dim = 1600
-        if w > max_dim or h > max_dim:
-            image.thumbnail((max_dim, max_dim), Image.Resampling.LANCZOS)
-
+        image.thumbnail((1000, 1000), Image.Resampling.LANCZOS)
         img_byte_arr = io.BytesIO()
-        image.save(img_byte_arr, format='JPEG', quality=85)
+        image.save(img_byte_arr, format='JPEG', quality=80)
         final_bytes = img_byte_arr.getvalue()
 
         prompt = """
         請分析這張娃娃機計數器照片，並提取以下三個資訊：
-        1. machine_id: 位於螢幕正下方白底黑框貼紙上的「大數字標籤」（機台編號，例如 19, 28, 72 等）。請轉為整數。
-        2. raw_a: LCD螢幕中 A 行右側的原始數字（不需乘以10）。
+        1. machine_id: 位於螢幕正下方白底黑框貼紙上的「大數字標籤」。
+        2. raw_a: LCD螢幕中 A 行右側的原始數字。
         3. raw_c: LCD螢幕中 C 行右側的原始數字。
-        
         【1 與 7 嚴格幾何特徵分辨規則】：
         - 數字 1 的頂部是平的、空的，完全沒有點亮橫槓。
         - 數字 7 的頂部明確點亮了一條水平橫槓。
-        
-        請嚴格只回傳 JSON 格式，不要有任何 Markdown 或解釋文字：
+        請嚴格只回傳 JSON 格式：
         {"machine_id": 數字, "raw_a": 數字, "raw_c": 數字}
         """
 
         best_model_name = get_active_model_name()
         model = genai.GenerativeModel(best_model_name)
+        response = model.generate_content([prompt, {"mime_type": "image/jpeg", "data": final_bytes}])
         
-        response = model.generate_content([
-            prompt,
-            {"mime_type": "image/jpeg", "data": final_bytes}
-        ])
-
-        text = response.text.strip()
-        
-        match = re.search(r'\{.*\}', text, re.DOTALL)
+        match = re.search(r'\{.*\}', response.text.strip(), re.DOTALL)
         if match:
-            clean_json = match.group(0)
-            data = json.loads(clean_json)
+            data = json.loads(match.group(0))
             return {
-                "status": "success",
-                "filename": filename,
+                "status": "success", "filename": filename,
                 "machine_id": int(data.get("machine_id", 0)),
                 "raw_a": int(data.get("raw_a", 0)),
                 "raw_c": int(data.get("raw_c", 0))
             }
         else:
-            return {"status": "error", "filename": filename, "message": f"AI 回傳格式非 JSON: {text}"}
+            return {"status": "error", "filename": filename, "message": "AI 回傳格式異常"}
 
     except Exception as e:
-        return {"status": "error", "filename": filename, "message": f"使用模型 ({best_model_name}) 執行失敗: {str(e)}"}
+        return {"status": "error", "filename": filename, "message": str(e)}
 
 @app.get("/", response_class=HTMLResponse)
 async def index_page():
@@ -106,7 +87,7 @@ async def index_page():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>AC表辨識系統</title>
+        <title>AC表辨識系統 (商用極速版)</title>
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f8; margin: 0; padding: 20px; display: flex; justify-content: center; }
             .card { background: white; width: 100%; max-width: 600px; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); box-sizing: border-box; }
@@ -114,7 +95,7 @@ async def index_page():
             .file-drop-area { border: 2px dashed #0071e3; border-radius: 8px; padding: 35px 20px; text-align: center; background: #f0f7ff; cursor: pointer; margin-bottom: 20px; }
             .file-drop-area input { display: none; }
             .upload-icon { font-size: 40px; margin-bottom: 10px; display: block; }
-            .btn { width: 100%; padding: 14px; background: #0071e3; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; }
+            .btn { width: 100%; padding: 14px; background: #0071e3; color: white; border: none; border-radius: 8px; font-size: 16px; font-weight: bold; cursor: pointer; transition: 0.3s; }
             .btn:disabled { background: #ccc; cursor: not-allowed; }
             .progress-box { display: none; margin-top: 20px; text-align: center; }
             .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #0071e3; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 10px auto; }
@@ -128,19 +109,19 @@ async def index_page():
     <body>
 
     <div class="card">
-        <h2>📸 AC表辨識系統</h2>
+        <h2>⚡ AC表極速辨識系統</h2>
         
         <div class="file-drop-area" onclick="document.getElementById('file-input').click()">
             <span class="upload-icon">📂</span>
-            <span id="file-label" style="font-size: 16px; color: #0071e3; font-weight: bold;">選取AC表照片</span>
+            <span id="file-label" style="font-size: 16px; color: #0071e3; font-weight: bold;">選取大量 AC 表照片 (支援 100+ 張)</span>
             <input type="file" id="file-input" multiple accept="image/*" onchange="updateFileLabel()">
         </div>
 
-        <button id="upload-btn" class="btn" onclick="startBatchAnalyze()" disabled>開始分析並排序</button>
+        <button id="upload-btn" class="btn" onclick="startBatchAnalyze()" disabled>開始極速分析並排序</button>
         
         <div id="progress-box" class="progress-box">
             <div class="spinner"></div>
-            <div id="progress-text" style="color: #666; font-weight: bold;">正在依序處理照片中，請稍候...<br>(為避免超載，每張照片將間隔 3 秒)</div>
+            <div id="progress-text" style="color: #666; font-weight: bold;">雲端引擎全速辨識中，請稍候十幾秒...</div>
         </div>
 
         <div id="error-box" class="error-msg"></div>
@@ -159,18 +140,17 @@ async def index_page():
             const btn = document.getElementById('upload-btn');
             
             if (input.files.length > 0) {
-                label.innerText = `已成功選擇 ${input.files.length} 張照片`;
+                label.innerText = `已成功載入 ${input.files.length} 張照片`;
                 btn.disabled = false;
             } else {
-                label.innerText = "選取AC表照片";
+                label.innerText = "選取大量 AC 表照片";
                 btn.disabled = true;
             }
         }
 
         async function startBatchAnalyze() {
             const input = document.getElementById('file-input');
-            const files = input.files;
-            if (files.length === 0) return;
+            if (input.files.length === 0) return;
 
             const btn = document.getElementById('upload-btn');
             const progressBox = document.getElementById('progress-box');
@@ -183,8 +163,8 @@ async def index_page():
             resultBox.style.display = 'none';
 
             const formData = new FormData();
-            for (let i = 0; i < files.length; i++) {
-                formData.append('files', files[i]);
+            for (let i = 0; i < input.files.length; i++) {
+                formData.append('files', input.files[i]);
             }
 
             try {
@@ -205,13 +185,13 @@ async def index_page():
                         errorBox.style.display = 'block';
                     }
                 } else {
-                    errorBox.innerText = '❌ 辨識失敗：' + data.message;
+                    errorBox.innerText = '❌ 系統異常：' + data.message;
                     errorBox.style.display = 'block';
                 }
             } catch (error) {
                 progressBox.style.display = 'none';
                 btn.disabled = false;
-                errorBox.innerText = '❌ 傳輸失敗，請檢查網路狀態。';
+                errorBox.innerText = '❌ 傳輸超時或網路中斷，請確認照片總容量或網路環境。';
                 errorBox.style.display = 'block';
             }
         }
@@ -230,29 +210,28 @@ async def index_page():
 
 @app.post("/api/batch-analyze")
 async def batch_analyze(files: List[UploadFile] = File(...)):
-    results = []
     loop = asyncio.get_event_loop()
     
-    # 改為「依序處理」，並加上 3 秒暫停節流閥 (Throttle)
-    for index, file in enumerate(files):
+    # 建立限流閥 (Semaphore)
+    # 同時最多開啟 15 條線程處理，防止 Render 512MB 記憶體撐爆，同時最大化處理速度
+    semaphore = asyncio.Semaphore(15)
+
+    async def process_file_with_semaphore(file):
         content = await file.read()
-        
-        # 執行單張辨識
-        result = await loop.run_in_executor(None, process_single_image, content, file.filename)
-        results.append(result)
-        
-        # 如果不是最後一張，就暫停 3 秒再送下一張，避免觸發 Google 瞬間流量限制
-        if index < len(files) - 1:
-            await asyncio.sleep(3.0)
+        async with semaphore:
+            return await loop.run_in_executor(None, process_single_image, content, file.filename)
+
+    # 將所有照片並行丟入處理佇列
+    tasks = [process_file_with_semaphore(f) for f in files]
+    results = await asyncio.gather(*tasks)
 
     valid_results = [r for r in results if r.get("status") == "success"]
     error_results = [r for r in results if r.get("status") == "error"]
 
     if not valid_results and error_results:
-        first_err = error_results[0]['message']
         return JSONResponse({
             "status": "error",
-            "message": f"所有照片皆辨識失敗。主要原因：{first_err}"
+            "message": f"全數辨識失敗。主要原因：{error_results[0]['message']}"
         })
 
     valid_results.sort(key=lambda x: x["machine_id"])
