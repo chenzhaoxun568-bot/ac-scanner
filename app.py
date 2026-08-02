@@ -16,7 +16,36 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
+# 全域變數，快取正確的模型名稱，避免重複詢問浪費時間
+ACTIVE_MODEL_NAME = None
+
+def get_active_model_name():
+    global ACTIVE_MODEL_NAME
+    if ACTIVE_MODEL_NAME:
+        return ACTIVE_MODEL_NAME
+        
+    try:
+        available_models = []
+        for m in genai.list_models():
+            if 'generateContent' in m.supported_generation_methods:
+                available_models.append(m.name)
+        
+        # 優先尋找包含 flash 的輕量極速模型 (自動適應最新代號)
+        for name in available_models:
+            if 'flash' in name.lower():
+                ACTIVE_MODEL_NAME = name
+                return name
+                
+        # 如果沒有 flash，就自動挑選第一個支援辨識的模型
+        if available_models:
+            ACTIVE_MODEL_NAME = available_models[0]
+            return ACTIVE_MODEL_NAME
+    except Exception:
+        pass
+    return 'gemini-1.5-flash' # 終極備用
+
 def process_single_image(image_bytes: bytes, filename: str) -> dict:
+    best_model_name = "偵測中..."
     try:
         if not GEMINI_API_KEY:
             return {"status": "error", "filename": filename, "message": "環境變數中缺少 GEMINI_API_KEY，請至 Render 設定。"}
@@ -45,8 +74,10 @@ def process_single_image(image_bytes: bytes, filename: str) -> dict:
         {"machine_id": 數字, "raw_a": 數字, "raw_c": 數字}
         """
 
-        # 使用帶有版本號的精確全名，確保 Google 伺服器絕對認得
-        model = genai.GenerativeModel('gemini-1.5-flash-001')
+        # 取得當下 Google 伺服器真正有效的模型名稱
+        best_model_name = get_active_model_name()
+        model = genai.GenerativeModel(best_model_name)
+        
         response = model.generate_content([
             prompt,
             {"mime_type": "image/jpeg", "data": final_bytes}
@@ -70,7 +101,7 @@ def process_single_image(image_bytes: bytes, filename: str) -> dict:
             return {"status": "error", "filename": filename, "message": f"AI 回傳格式非 JSON: {text}"}
 
     except Exception as e:
-        return {"status": "error", "filename": filename, "message": str(e)}
+        return {"status": "error", "filename": filename, "message": f"使用模型 ({best_model_name}) 執行失敗: {str(e)}"}
 
 @app.get("/", response_class=HTMLResponse)
 async def index_page():
@@ -114,7 +145,7 @@ async def index_page():
         
         <div id="progress-box" class="progress-box">
             <div class="spinner"></div>
-            <div id="progress-text" style="color: #666; font-weight: bold;">正在由雲端伺服器分析照片中...</div>
+            <div id="progress-text" style="color: #666; font-weight: bold;">正在由雲端伺服器自動匹配最佳模型並分析中...</div>
         </div>
 
         <div id="error-box" class="error-msg"></div>
