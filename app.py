@@ -16,7 +16,6 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-# 全域變數，快取正確的模型名稱，避免重複詢問浪費時間
 ACTIVE_MODEL_NAME = None
 
 def get_active_model_name():
@@ -30,19 +29,17 @@ def get_active_model_name():
             if 'generateContent' in m.supported_generation_methods:
                 available_models.append(m.name)
         
-        # 優先尋找包含 flash 的輕量極速模型 (自動適應最新代號)
         for name in available_models:
             if 'flash' in name.lower():
                 ACTIVE_MODEL_NAME = name
                 return name
                 
-        # 如果沒有 flash，就自動挑選第一個支援辨識的模型
         if available_models:
             ACTIVE_MODEL_NAME = available_models[0]
             return ACTIVE_MODEL_NAME
     except Exception:
         pass
-    return 'gemini-1.5-flash' # 終極備用
+    return 'gemini-1.5-flash' 
 
 def process_single_image(image_bytes: bytes, filename: str) -> dict:
     best_model_name = "偵測中..."
@@ -74,7 +71,6 @@ def process_single_image(image_bytes: bytes, filename: str) -> dict:
         {"machine_id": 數字, "raw_a": 數字, "raw_c": 數字}
         """
 
-        # 取得當下 Google 伺服器真正有效的模型名稱
         best_model_name = get_active_model_name()
         model = genai.GenerativeModel(best_model_name)
         
@@ -85,7 +81,6 @@ def process_single_image(image_bytes: bytes, filename: str) -> dict:
 
         text = response.text.strip()
         
-        # 強效萃取 JSON
         match = re.search(r'\{.*\}', text, re.DOTALL)
         if match:
             clean_json = match.group(0)
@@ -124,7 +119,7 @@ async def index_page():
             .progress-box { display: none; margin-top: 20px; text-align: center; }
             .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #0071e3; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 10px auto; }
             @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-            .error-msg { color: #d60000; font-weight: bold; margin-top: 15px; display: none; white-space: pre-wrap; background: #ffebeb; padding: 12px; border-radius: 8px; }
+            .error-msg { color: #d60000; font-weight: bold; margin-top: 15px; display: none; white-space: pre-wrap; background: #ffebeb; padding: 12px; border-radius: 8px; font-size: 14px; }
             .result-area { margin-top: 25px; display: none; }
             textarea { width: 100%; height: 350px; font-family: monospace; font-size: 16px; padding: 12px; border: 1px solid #d2d2d7; border-radius: 8px; box-sizing: border-box; margin-bottom: 12px; }
             .btn-copy { background: #34c759; }
@@ -145,7 +140,7 @@ async def index_page():
         
         <div id="progress-box" class="progress-box">
             <div class="spinner"></div>
-            <div id="progress-text" style="color: #666; font-weight: bold;">正在由雲端伺服器自動匹配最佳模型並分析中...</div>
+            <div id="progress-text" style="color: #666; font-weight: bold;">正在依序處理照片中，請稍候...<br>(為避免超載，每張照片將間隔 3 秒)</div>
         </div>
 
         <div id="error-box" class="error-msg"></div>
@@ -235,16 +230,21 @@ async def index_page():
 
 @app.post("/api/batch-analyze")
 async def batch_analyze(files: List[UploadFile] = File(...)):
-    tasks = []
+    results = []
     loop = asyncio.get_event_loop()
     
-    for file in files:
+    # 改為「依序處理」，並加上 3 秒暫停節流閥 (Throttle)
+    for index, file in enumerate(files):
         content = await file.read()
-        task = loop.run_in_executor(None, process_single_image, content, file.filename)
-        tasks.append(task)
+        
+        # 執行單張辨識
+        result = await loop.run_in_executor(None, process_single_image, content, file.filename)
+        results.append(result)
+        
+        # 如果不是最後一張，就暫停 3 秒再送下一張，避免觸發 Google 瞬間流量限制
+        if index < len(files) - 1:
+            await asyncio.sleep(3.0)
 
-    results = await asyncio.gather(*tasks)
-    
     valid_results = [r for r in results if r.get("status") == "success"]
     error_results = [r for r in results if r.get("status") == "error"]
 
