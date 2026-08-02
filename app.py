@@ -1,6 +1,7 @@
 import os
 import io
 import json
+import re
 import asyncio
 from typing import List
 from fastapi import FastAPI, UploadFile, File
@@ -15,10 +16,12 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-def process_single_image(image_bytes: bytes) -> dict:
+def process_single_image(image_bytes: bytes, filename: str) -> dict:
     try:
+        if not GEMINI_API_KEY:
+            return {"status": "error", "filename": filename, "message": "環境變數中缺少 GEMINI_API_KEY，請至 Render 設定。"}
+
         image = Image.open(io.BytesIO(image_bytes))
-        
         w, h = image.size
         max_dim = 1600
         if w > max_dim or h > max_dim:
@@ -48,16 +51,25 @@ def process_single_image(image_bytes: bytes) -> dict:
             {"mime_type": "image/jpeg", "data": final_bytes}
         ])
 
-        clean_json = response.text.replace("```json", "").replace("```", "").replace("```", "").strip()
-        data = json.loads(clean_json)
-        return {
-            "status": "success",
-            "machine_id": int(data.get("machine_id", 0)),
-            "raw_a": int(data.get("raw_a", 0)),
-            "raw_c": int(data.get("raw_c", 0))
-        }
+        text = response.text.strip()
+        
+        # 強效萃取 JSON
+        match = re.search(r'\{.*\}', text, re.DOTALL)
+        if match:
+            clean_json = match.group(0)
+            data = json.loads(clean_json)
+            return {
+                "status": "success",
+                "filename": filename,
+                "machine_id": int(data.get("machine_id", 0)),
+                "raw_a": int(data.get("raw_a", 0)),
+                "raw_c": int(data.get("raw_c", 0))
+            }
+        else:
+            return {"status": "error", "filename": filename, "message": f"AI 回傳格式非 JSON: {text}"}
+
     except Exception as e:
-        return {"status": "error", "message": str(e)}
+        return {"status": "error", "filename": filename, "message": str(e)}
 
 @app.get("/", response_class=HTMLResponse)
 async def index_page():
@@ -80,7 +92,7 @@ async def index_page():
             .progress-box { display: none; margin-top: 20px; text-align: center; }
             .spinner { border: 4px solid #f3f3f3; border-top: 4px solid #0071e3; border-radius: 50%; width: 30px; height: 30px; animation: spin 1s linear infinite; margin: 10px auto; }
             @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-            .error-msg { color: #d60000; font-weight: bold; margin-top: 10px; display: none; white-space: pre-wrap; }
+            .error-msg { color: #d60000; font-weight: bold; margin-top: 15px; display: none; white-space: pre-wrap; background: #ffebeb; padding: 12px; border-radius: 8px; }
             .result-area { margin-top: 25px; display: none; }
             textarea { width: 100%; height: 350px; font-family: monospace; font-size: 16px; padding: 12px; border: 1px solid #d2d2d7; border-radius: 8px; box-sizing: border-box; margin-bottom: 12px; }
             .btn-copy { background: #34c759; }
@@ -135,7 +147,6 @@ async def index_page():
 
             const btn = document.getElementById('upload-btn');
             const progressBox = document.getElementById('progress-box');
-            const progressText = document.getElementById('progress-text');
             const resultBox = document.getElementById('result-box');
             const errorBox = document.getElementById('error-box');
 
@@ -162,6 +173,10 @@ async def index_page():
                 if (data.status === 'success') {
                     document.getElementById('result-text').value = data.formatted_text;
                     resultBox.style.display = 'block';
+                    if (data.errors && data.errors.length > 0) {
+                        errorBox.innerText = '⚠️ 部分照片辨識失敗：\\n' + data.errors.join('\\n');
+                        errorBox.style.display = 'block';
+                    }
                 } else {
                     errorBox.innerText = '❌ 辨識失敗：' + data.message;
                     errorBox.style.display = 'block';
@@ -193,11 +208,20 @@ async def batch_analyze(files: List[UploadFile] = File(...)):
     
     for file in files:
         content = await file.read()
-        task = loop.run_in_executor(None, process_single_image, content)
+        task = loop.run_in_executor(None, process_single_image, content, file.filename)
         tasks.append(task)
 
     results = await asyncio.gather(*tasks)
+    
     valid_results = [r for r in results if r.get("status") == "success"]
+    error_results = [r for r in results if r.get("status") == "error"]
+
+    if not valid_results and error_results:
+        first_err = error_results[0]['message']
+        return JSONResponse({
+            "status": "error",
+            "message": f"所有照片皆辨識失敗。主要原因：{first_err}"
+        })
 
     valid_results.sort(key=lambda x: x["machine_id"])
 
@@ -207,11 +231,13 @@ async def batch_analyze(files: List[UploadFile] = File(...)):
         formatted_lines.append(f"{item['raw_c']}")
 
     final_text = "\n".join(formatted_lines)
+    err_msgs = [f"{e['filename']}: {e['message']}" for e in error_results]
 
     return JSONResponse({
         "status": "success",
         "total_processed": len(valid_results),
-        "formatted_text": final_text
+        "formatted_text": final_text,
+        "errors": err_msgs
     })
 
 if __name__ == "__main__":
