@@ -16,32 +16,11 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 if GEMINI_API_KEY:
     genai.configure(api_key=GEMINI_API_KEY)
 
-ACTIVE_MODEL_NAME = None
-
-def get_active_model_name():
-    global ACTIVE_MODEL_NAME
-    if ACTIVE_MODEL_NAME:
-        return ACTIVE_MODEL_NAME
-    try:
-        available_models = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
-        for name in available_models:
-            if 'flash' in name.lower():
-                ACTIVE_MODEL_NAME = name
-                return name
-        if available_models:
-            ACTIVE_MODEL_NAME = available_models[0]
-            return ACTIVE_MODEL_NAME
-    except:
-        pass
-    return 'gemini-1.5-flash'
-
 def process_single_image(image_bytes: bytes, filename: str) -> dict:
-    best_model_name = "偵測中..."
     try:
         if not GEMINI_API_KEY:
             return {"status": "error", "filename": filename, "message": "環境變數缺少 GEMINI_API_KEY"}
 
-        # 強制壓縮圖片：大幅減少傳輸時間與伺服器記憶體消耗
         image = Image.open(io.BytesIO(image_bytes))
         image.thumbnail((1000, 1000), Image.Resampling.LANCZOS)
         img_byte_arr = io.BytesIO()
@@ -60,8 +39,8 @@ def process_single_image(image_bytes: bytes, filename: str) -> dict:
         {"machine_id": 數字, "raw_a": 數字, "raw_c": 數字}
         """
 
-        best_model_name = get_active_model_name()
-        model = genai.GenerativeModel(best_model_name)
+        # 直接指定最穩定的正式商用模型
+        model = genai.GenerativeModel('gemini-1.5-flash')
         response = model.generate_content([prompt, {"mime_type": "image/jpeg", "data": final_bytes}])
         
         match = re.search(r'\{.*\}', response.text.strip(), re.DOTALL)
@@ -87,7 +66,7 @@ async def index_page():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>AC表辨識系統 (商用極速版)</title>
+        <title>AC表極速辨識系統</title>
         <style>
             body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #f4f6f8; margin: 0; padding: 20px; display: flex; justify-content: center; }
             .card { background: white; width: 100%; max-width: 600px; padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.08); box-sizing: border-box; }
@@ -113,7 +92,7 @@ async def index_page():
         
         <div class="file-drop-area" onclick="document.getElementById('file-input').click()">
             <span class="upload-icon">📂</span>
-            <span id="file-label" style="font-size: 16px; color: #0071e3; font-weight: bold;">選取大量 AC 表照片 (支援 100+ 張)</span>
+            <span id="file-label" style="font-size: 16px; color: #0071e3; font-weight: bold;">選取 AC 表照片</span>
             <input type="file" id="file-input" multiple accept="image/*" onchange="updateFileLabel()">
         </div>
 
@@ -121,7 +100,7 @@ async def index_page():
         
         <div id="progress-box" class="progress-box">
             <div class="spinner"></div>
-            <div id="progress-text" style="color: #666; font-weight: bold;">雲端引擎全速辨識中，請稍候十幾秒...</div>
+            <div id="progress-text" style="color: #666; font-weight: bold;">付費通道全速分析中，請稍候...</div>
         </div>
 
         <div id="error-box" class="error-msg"></div>
@@ -143,7 +122,7 @@ async def index_page():
                 label.innerText = `已成功載入 ${input.files.length} 張照片`;
                 btn.disabled = false;
             } else {
-                label.innerText = "選取大量 AC 表照片";
+                label.innerText = "選取 AC 表照片";
                 btn.disabled = true;
             }
         }
@@ -191,7 +170,7 @@ async def index_page():
             } catch (error) {
                 progressBox.style.display = 'none';
                 btn.disabled = false;
-                errorBox.innerText = '❌ 傳輸超時或網路中斷，請確認照片總容量或網路環境。';
+                errorBox.innerText = '❌ 傳輸超時或網路中斷，請確認網路環境。';
                 errorBox.style.display = 'block';
             }
         }
@@ -211,9 +190,6 @@ async def index_page():
 @app.post("/api/batch-analyze")
 async def batch_analyze(files: List[UploadFile] = File(...)):
     loop = asyncio.get_event_loop()
-    
-    # 建立限流閥 (Semaphore)
-    # 同時最多開啟 15 條線程處理，防止 Render 512MB 記憶體撐爆，同時最大化處理速度
     semaphore = asyncio.Semaphore(15)
 
     async def process_file_with_semaphore(file):
@@ -221,7 +197,6 @@ async def batch_analyze(files: List[UploadFile] = File(...)):
         async with semaphore:
             return await loop.run_in_executor(None, process_single_image, content, file.filename)
 
-    # 將所有照片並行丟入處理佇列
     tasks = [process_file_with_semaphore(f) for f in files]
     results = await asyncio.gather(*tasks)
 
